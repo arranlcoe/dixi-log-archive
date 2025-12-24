@@ -96,8 +96,9 @@ async function main() {
   const outName = `dixi-logs-${day}.jsonl.gz`;
   const outPath = path.join(os.tmpdir(), outName);
 
-  // ClickHouse computes the UTC day boundaries to avoid timestamp formatting issues.
-  // OPTIONAL: exclude Render Postgres noise by syslog.appname starting with "dpg-".
+  // ClickHouse computes UTC day boundaries.
+  // IMPORTANT: nested JSON extraction for syslog.appname must use JSONExtract(...) with path segments.
+  // This filter removes Render Postgres noise (dpg-*). If you ever want to include everything, remove the AND line.
   const sql = `
 WITH
   toStartOfDay(now('UTC')) AS today_utc,
@@ -108,7 +109,7 @@ SELECT
 FROM remote(${BETTERSTACK_LOGS_TABLE})
 WHERE dt >= yesterday_utc
   AND dt <  today_utc
-  AND JSONExtractString(raw, 'syslog.appname') NOT LIKE 'dpg-%'
+  AND ifNull(JSONExtract(raw, 'syslog', 'appname', 'Nullable(String)'), '') NOT LIKE 'dpg-%'
 ORDER BY dt ASC
 FORMAT JSONEachRow
 `.trim();
