@@ -60,17 +60,27 @@ function loadServiceAccount() {
 }
 
 async function uploadToDrive(filePath, fileName) {
-  const sa = loadServiceAccount();
+  const {
+    GOOGLE_OAUTH_CLIENT_ID,
+    GOOGLE_OAUTH_CLIENT_SECRET,
+    GOOGLE_OAUTH_REFRESH_TOKEN,
+  } = process.env;
 
-  const auth = new google.auth.JWT({
-    email: sa.client_email,
-    key: sa.private_key,
-    scopes: ["https://www.googleapis.com/auth/drive.file"],
-  });
+  if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_CLIENT_SECRET || !GOOGLE_OAUTH_REFRESH_TOKEN) {
+    throw new Error("Missing GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET / GOOGLE_OAUTH_REFRESH_TOKEN");
+  }
 
-  const drive = google.drive({ version: "v3", auth });
+  const oauth2 = new google.auth.OAuth2(
+    GOOGLE_OAUTH_CLIENT_ID,
+    GOOGLE_OAUTH_CLIENT_SECRET,
+    "https://developers.google.com/oauthplayground"
+  );
 
-  const created = await drive.files.create({
+  oauth2.setCredentials({ refresh_token: GOOGLE_OAUTH_REFRESH_TOKEN });
+
+  const drive = google.drive({ version: "v3", auth: oauth2 });
+
+  const res = await drive.files.create({
     requestBody: {
       name: fileName,
       parents: [DRIVE_FOLDER_ID],
@@ -82,8 +92,9 @@ async function uploadToDrive(filePath, fileName) {
     fields: "id,name",
   });
 
-  return created.data;
+  return res.data;
 }
+
 
 async function main() {
   const { start, end } = utcRangeForYesterday();
