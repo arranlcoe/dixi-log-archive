@@ -2,7 +2,7 @@ name: Archive Better Stack logs to Google Drive
 
 on:
   schedule:
-    - cron: "10 1 * * *"  # daily 01:10 UTC
+    - cron: "10 1 * * *" # daily 01:10 UTC
   workflow_dispatch: {}
 
 jobs:
@@ -26,6 +26,9 @@ jobs:
           BETTERSTACK_CH_USER: ${{ secrets.BETTERSTACK_CH_USER }}
           BETTERSTACK_CH_PASS: ${{ secrets.BETTERSTACK_CH_PASS }}
           BETTERSTACK_LOGS_TABLE: ${{ secrets.BETTERSTACK_LOGS_TABLE }}
+
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
         run: node scripts/archive-betterstack-to-drive.mjs
