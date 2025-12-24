@@ -5,17 +5,14 @@ import zlib from "node:zlib";
 import { google } from "googleapis";
 
 const {
-  BETTERSTACK_CH_URL,
+  BETTERSTACK_CH_URL,       // https://eu-nbg-2-connect.betterstackdata.com
   BETTERSTACK_CH_USER,
   BETTERSTACK_CH_PASS,
-  BETTERSTACK_LOGS_TABLE, // e.g. t489460_dixi_logs
-
-  // OPTIONAL: if you set this, we won't need discovery
-  BETTERSTACK_S3_TABLE,   // e.g. t489460_dixi_s3
+  BETTERSTACK_LOGS_TABLE,   // e.g. t489460_dixi_logs
+  BETTERSTACK_S3_TABLE,     // OPTIONAL override, else derived from _logs -> _s3
 
   DRIVE_FOLDER_ID,
 
-  // OAuth user (required for personal Google Drive uploads)
   GOOGLE_OAUTH_CLIENT_ID,
   GOOGLE_OAUTH_CLIENT_SECRET,
   GOOGLE_OAUTH_REFRESH_TOKEN,
@@ -30,6 +27,7 @@ must(BETTERSTACK_CH_URL, "BETTERSTACK_CH_URL");
 must(BETTERSTACK_CH_USER, "BETTERSTACK_CH_USER");
 must(BETTERSTACK_CH_PASS, "BETTERSTACK_CH_PASS");
 must(BETTERSTACK_LOGS_TABLE, "BETTERSTACK_LOGS_TABLE");
+
 must(DRIVE_FOLDER_ID, "DRIVE_FOLDER_ID");
 must(GOOGLE_OAUTH_CLIENT_ID, "GOOGLE_OAUTH_CLIENT_ID");
 must(GOOGLE_OAUTH_CLIENT_SECRET, "GOOGLE_OAUTH_CLIENT_SECRET");
@@ -62,33 +60,6 @@ async function chQuery(sql) {
   const text = await res.text();
   if (!res.ok) throw new Error(`ClickHouse HTTP ${res.status}: ${text.slice(0, 2000)}`);
   return text;
-}
-
-async function discoverS3Table() {
-  // Better Stack typically names this by replacing _logs with _s3
-  const expected = BETTERSTACK_LOGS_TABLE.replace(/_logs$/, "_s3");
-
-  const out = await chQuery("SHOW TABLES FORMAT TabSeparated");
-  const tables = out
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  if (tables.includes(expected)) return expected;
-
-  // fallback: same prefix, ends with _s3
-  const prefix = BETTERSTACK_LOGS_TABLE.replace(/_logs$/, "");
-  const c1 = tables.filter((t) => t.startsWith(prefix) && t.endsWith("_s3"));
-  if (c1.length === 1) return c1[0];
-
-  // fallback: same numeric t<digits> prefix
-  const tnum = (BETTERSTACK_LOGS_TABLE.match(/^t\d+/) || [null])[0];
-  if (tnum) {
-    const c2 = tables.filter((t) => t.startsWith(tnum) && t.endsWith("_s3"));
-    if (c2.length === 1) return c2[0];
-  }
-
-  return null;
 }
 
 function driveClientFromOAuth() {
@@ -125,23 +96,30 @@ async function main() {
   const outName = `dixi-logs-${day}.jsonl.gz`;
   const outPath = path.join(os.tmpdir(), outName);
 
-  const s3Table = (BETTERSTACK_S3_TABLE || "").trim() || (await discoverS3Table());
+  const s3Table =
+    (BETTERSTACK_S3_TABLE || "").trim() ||
+    BETTERSTACK_LOGS_TABLE.replace(/_logs$/, "_s3"); // per Better Stack docs
+
   console.log("Hot logs table:", BETTERSTACK_LOGS_TABLE);
-  console.log("Cold s3 table:", s3Table ? s3Table : "(not found; using hot only)");
+  console.log("Cold s3 table:", s3Table);
 
-  // Build a combined source (hot + cold) per Better Stack docs. :contentReference[oaicite:1]{index=1}
-  const source = s3Table
-    ? `
-      (
-        SELECT dt, raw FROM remote(${BETTERSTACK_LOGS_TABLE})
-        UNION ALL
-        SELECT dt, raw FROM s3Cluster(primary, ${s3Table})
-        WHERE _row_type = 1
-      )
-    `
-    : `remote(${BETTERSTACK_LOGS_TABLE})`;
+  // Debug counts (hot vs cold) for yesterday in UTC
+  const debugSql = `
+WITH
+  toStartOfDay(now('UTC')) AS today_utc,
+  today_utc - INTERVAL 1 DAY AS yesterday_utc
+SELECT
+  (SELECT count() FROM remote(${BETTERSTACK_LOGS_TABLE})
+    WHERE dt >= yesterday_utc AND dt < today_utc) AS hot_rows,
+  (SELECT count() FROM s3Cluster(primary, ${s3Table})
+    WHERE _row_type = 1 AND dt >= yesterday_utc AND dt < today_utc) AS cold_rows
+FORMAT JSONEachRow
+`.trim();
 
-  // Query "yesterday" in UTC. Also filter out Render Postgres spam (dpg-*) safely.
+  const debug = await chQuery(debugSql);
+  console.log("Debug counts:", debug.trim());
+
+  // Full export (hot + cold), then filter out Render Postgres spam (dpg-*) safely
   const sql = `
 WITH
   toStartOfDay(now('UTC')) AS today_utc,
@@ -149,7 +127,12 @@ WITH
 SELECT
   dt,
   raw
-FROM ${source}
+FROM (
+  SELECT dt, raw FROM remote(${BETTERSTACK_LOGS_TABLE})
+  UNION ALL
+  SELECT dt, raw FROM s3Cluster(primary, ${s3Table})
+  WHERE _row_type = 1
+)
 WHERE dt >= yesterday_utc
   AND dt <  today_utc
   AND ifNull(JSONExtract(raw, 'syslog.appname', 'Nullable(String)'), '') NOT LIKE 'dpg-%'
@@ -161,24 +144,7 @@ FORMAT JSONEachRow
   const jsonl = await chQuery(sql);
 
   if (!jsonl || jsonl.trim().length === 0) {
-    console.log(`No logs returned for ${day}. Running debug counts...`);
-
-    const debugSql = `
-WITH
-  toStartOfDay(now('UTC')) AS today_utc,
-  today_utc - INTERVAL 1 DAY AS yesterday_utc
-SELECT
-  count() AS rows,
-  min(dt) AS min_dt,
-  max(dt) AS max_dt
-FROM ${source}
-WHERE dt >= yesterday_utc AND dt < today_utc
-FORMAT JSONEachRow
-`.trim();
-
-    const debug = await chQuery(debugSql);
-    console.log("Debug:", debug.trim());
-    console.log("Skipping upload.");
+    console.log(`No logs returned for ${day}. Skipping upload.`);
     return;
   }
 
