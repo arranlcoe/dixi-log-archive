@@ -5,14 +5,15 @@ import zlib from "node:zlib";
 import { google } from "googleapis";
 
 const {
-  BETTERSTACK_CH_URL,       // https://eu-nbg-2-connect.betterstackdata.com
+  BETTERSTACK_CH_URL,
   BETTERSTACK_CH_USER,
   BETTERSTACK_CH_PASS,
-  BETTERSTACK_LOGS_TABLE,   // e.g. t489460_dixi_logs
-  BETTERSTACK_S3_TABLE,     // OPTIONAL override, else derived from _logs -> _s3
+  BETTERSTACK_LOGS_TABLE, // e.g. t489460_dixi_logs
+  BETTERSTACK_S3_TABLE,   // optional; if not set we derive _logs -> _s3
 
   DRIVE_FOLDER_ID,
 
+  // OAuth user (required for personal Google Drive uploads)
   GOOGLE_OAUTH_CLIENT_ID,
   GOOGLE_OAUTH_CLIENT_SECRET,
   GOOGLE_OAUTH_REFRESH_TOKEN,
@@ -27,7 +28,6 @@ must(BETTERSTACK_CH_URL, "BETTERSTACK_CH_URL");
 must(BETTERSTACK_CH_USER, "BETTERSTACK_CH_USER");
 must(BETTERSTACK_CH_PASS, "BETTERSTACK_CH_PASS");
 must(BETTERSTACK_LOGS_TABLE, "BETTERSTACK_LOGS_TABLE");
-
 must(DRIVE_FOLDER_ID, "DRIVE_FOLDER_ID");
 must(GOOGLE_OAUTH_CLIENT_ID, "GOOGLE_OAUTH_CLIENT_ID");
 must(GOOGLE_OAUTH_CLIENT_SECRET, "GOOGLE_OAUTH_CLIENT_SECRET");
@@ -98,28 +98,14 @@ async function main() {
 
   const s3Table =
     (BETTERSTACK_S3_TABLE || "").trim() ||
-    BETTERSTACK_LOGS_TABLE.replace(/_logs$/, "_s3"); // per Better Stack docs
+    BETTERSTACK_LOGS_TABLE.replace(/_logs$/, "_s3");
 
   console.log("Hot logs table:", BETTERSTACK_LOGS_TABLE);
   console.log("Cold s3 table:", s3Table);
 
-  // Debug counts (hot vs cold) for yesterday in UTC
-  const debugSql = `
-WITH
-  toStartOfDay(now('UTC')) AS today_utc,
-  today_utc - INTERVAL 1 DAY AS yesterday_utc
-SELECT
-  (SELECT count() FROM remote(${BETTERSTACK_LOGS_TABLE})
-    WHERE dt >= yesterday_utc AND dt < today_utc) AS hot_rows,
-  (SELECT count() FROM s3Cluster(primary, ${s3Table})
-    WHERE _row_type = 1 AND dt >= yesterday_utc AND dt < today_utc) AS cold_rows
-FORMAT JSONEachRow
-`.trim();
-
-  const debug = await chQuery(debugSql);
-  console.log("Debug counts:", debug.trim());
-
-  // Full export (hot + cold), then filter out Render Postgres spam (dpg-*) safely
+  // Export "yesterday UTC" from hot + cold. Filter out Render Postgres noise:
+  // - syslog.appname like "dpg-8m6qm"
+  // - syslog.host like "dpg-...."
   const sql = `
 WITH
   toStartOfDay(now('UTC')) AS today_utc,
@@ -135,7 +121,8 @@ FROM (
 )
 WHERE dt >= yesterday_utc
   AND dt <  today_utc
-  AND ifNull(JSONExtract(raw, 'syslog.appname', 'Nullable(String)'), '') NOT LIKE 'dpg-%'
+  AND NOT startsWith(ifNull(JSONExtract(raw, 'syslog', 'appname', 'Nullable(String)'), ''), 'dpg-')
+  AND NOT startsWith(ifNull(JSONExtract(raw, 'syslog', 'host',   'Nullable(String)'), ''), 'dpg-')
 ORDER BY dt ASC
 FORMAT JSONEachRow
 `.trim();
