@@ -93,18 +93,17 @@ async function main() {
 
   // Keep it simple: export "dt" + full JSON payload in "message" + syslog fields.
   // Your Better Stack schema may differ; if this errors, we’ll adjust the SELECT fields.
-  const sql = `
+const sql = `
 SELECT
   dt,
-  level,
-  message,
-  syslog
+  raw
 FROM remote(${BETTERSTACK_LOGS_TABLE})
 WHERE dt >= toDateTime64('${toCHDateTime64(start)}', 3, 'UTC')
   AND dt <  toDateTime64('${toCHDateTime64(end)}', 3, 'UTC')
 ORDER BY dt ASC
 FORMAT JSONEachRow
 `.trim();
+
 
   console.log(`Querying logs for ${day}...`);
   const jsonl = await chQuery(sql);
