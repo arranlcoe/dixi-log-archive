@@ -1,0 +1,11 @@
+{
+  "name": "dixi-log-archive",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "archive": "node scripts/archive-betterstack-to-drive.mjs"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0"
+  }
+}
